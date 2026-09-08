@@ -1,0 +1,104 @@
+name: Sync upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 5 * * 1'
+
+# This workflow never mutates the maintained fork branch. It snapshots the
+# upstream commit on a disposable fork branch and makes GitHub expose any merge
+# conflicts in a normal pull request.
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  TARGET_BRANCH: vision-input-fixes
+  UPSTREAM_REPOSITORY: h4ckf0r0day/obscura
+  UPSTREAM_BRANCH: main
+
+jobs:
+  open-sync-pr:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out maintained fork branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve upstream candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git" 2>/dev/null || \
+            git remote set-url upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch --no-tags upstream \
+            "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"
+
+          target_sha="$(git rev-parse "${TARGET_BRANCH}^{commit}")"
+          upstream_sha="$(git rev-parse "upstream/${UPSTREAM_BRANCH}^{commit}")"
+          printf 'target_sha=%s\n' "$target_sha" >> "$GITHUB_OUTPUT"
+          printf 'upstream_sha=%s\n' "$upstream_sha" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$upstream_sha" "$target_sha"; then
+            echo 'needed=false' >> "$GITHUB_OUTPUT"
+            echo "${TARGET_BRANCH} already contains ${UPSTREAM_REPOSITORY}@${upstream_sha}"
+          else
+            echo 'needed=true' >> "$GITHUB_OUTPUT"
+            echo "Sync candidate: ${UPSTREAM_REPOSITORY}@${upstream_sha}"
+          fi
+
+      - name: Check for an existing sync pull request
+        if: steps.candidate.outputs.needed == 'true'
+        id: existing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          number="$(gh pr list --repo "$GITHUB_REPOSITORY" --base "$TARGET_BRANCH" --state open \
+            --json number,title \
+            --jq '[.[] | select(.title | startswith("chore: sync upstream/main"))][0].number // empty')"
+          if [ -n "$number" ]; then
+            printf 'open=true\nnumber=%s\n' "$number" >> "$GITHUB_OUTPUT"
+            echo "Sync pull request #${number} is already open"
+          else
+            echo 'open=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push immutable upstream snapshot branch
+        if: steps.candidate.outputs.needed == 'true' && steps.existing.outputs.open != 'true'
+        id: snapshot
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sync_branch="sync/upstream-${UPSTREAM_BRANCH}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch --detach "${{ steps.candidate.outputs.upstream_sha }}"
+          git switch --create "$sync_branch"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --set-upstream origin "$sync_branch"
+          printf 'branch=%s\n' "$sync_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Open upstream-sync pull request
+        if: steps.snapshot.outputs.branch != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh pr create \
+            --repo "$GITHUB_REPOSITORY" \
+            --base "$TARGET_BRANCH" \
+            --head "${{ steps.snapshot.outputs.branch }}" \
+            --title "chore: sync upstream/main at ${{ steps.candidate.outputs.upstream_sha }}" \
+            --body "Upstream snapshot: ${UPSTREAM_REPOSITORY}@${{ steps.candidate.outputs.upstream_sha }}\n\nThis PR deliberately merges the upstream snapshot into ${TARGET_BRANCH}. GitHub exposes conflicts for review; the workflow never rebases or force-pushes the maintained fork branch."
