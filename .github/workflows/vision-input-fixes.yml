@@ -44,7 +44,12 @@ jobs:
         env:
           # The workspace's HTTP fixtures bind loopback; opt in only for tests.
           OBSCURA_ALLOW_PRIVATE_NETWORK: "1"
-        run: cargo test --locked --workspace --features render
+        run: |
+          cargo test --locked -p obscura-cdp --features render
+          cargo test --locked -p obscura-browser --features render
+          cargo test --locked -p obscura-js
+          cargo test --locked -p obscura-net
+          cargo test --locked -p obscura-render
 
       - name: Build render release
         run: cargo build --locked --release -p obscura-cli --bins --features render
