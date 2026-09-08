@@ -156,4 +156,7 @@ await browser.close();  // closes the CDP connection, leaves obscura serve runni
   [Persist cookies and storage](Persist-cookies-and-storage.md).
 - Service workers, native media, some Web APIs, long-tail CSS, and compositor
   behavior remain incomplete relative to Chromium.
+- Scripted `fetch()`/XHR and page-initiated GET navigation with `--stealth`
+  currently omit the default `Referer`; see
+  [Referer header limitations](Referer-header-limitations.md).
 - PDF text is not selectable/searchable and tagged PDF is not yet available.

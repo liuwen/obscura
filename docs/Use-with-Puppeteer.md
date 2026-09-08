@@ -166,5 +166,8 @@ await browser.disconnect();  // leaves obscura serve running
 
 - Some device emulation, service-worker, native media, long-tail CSS, and
   compositor behavior remains incomplete relative to Chromium.
+- Scripted `fetch()`/XHR and page-initiated GET navigation with `--stealth`
+  currently omit the default `Referer`; see
+  [Referer header limitations](Referer-header-limitations.md).
 - Pages share one V8 isolate; CPU-bound JavaScript serializes across pages.
 - PDF text is not selectable/searchable and tagged PDF is not yet available.

@@ -21,6 +21,7 @@
 * [Use as a Rust library](Use-as-a-Rust-library.md)
 * [Persist cookies and storage](Persist-cookies-and-storage.md)
 * [Intercept and modify requests](Intercept-and-modify-requests.md)
+* [Referer header limitations](Referer-header-limitations.md)
 * [Run in production at scale](Run-in-production-at-scale.md)
 
 ## Reference
