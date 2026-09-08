@@ -48,6 +48,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Test render-enabled workspace
+        env:
+          # The workspace's HTTP fixtures bind loopback; opt in only for tests.
+          OBSCURA_ALLOW_PRIVATE_NETWORK: "1"
         run: cargo test --locked --workspace --features render
 
       - name: Build render release
