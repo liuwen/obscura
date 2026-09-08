@@ -34,11 +34,11 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = aarch64
 
-      - name: Install CDP transport only
+      - name: Install Python transports only
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip install --user --disable-pip-version-check websockets==15.0.1
+          python3 -m pip install --user --disable-pip-version-check httpx==0.28.1 websockets==15.0.1
 
       - name: Download and verify published Obscura archive
         shell: bash

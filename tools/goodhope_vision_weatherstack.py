@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 import websockets
 
 
@@ -272,17 +273,19 @@ def goodhope_request(api_key: str, screenshot: bytes, context: dict[str, Any]) -
             },
         ],
     }
-    request = urllib.request.Request(
-        f"{GOODHOPE_BASE_URL}/v1/responses",
-        data=json.dumps(payload, separators=(",", ":")).encode(),
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            returned = json.loads(response.read().decode())
-    except urllib.error.HTTPError as error:
-        raise RuntimeError(f"Goodhope HTTP {error.code}") from None
+        with httpx.Client(
+            timeout=httpx.Timeout(120.0, connect=15.0),
+            headers={"Authorization": f"Bearer {api_key}"},
+            follow_redirects=False,
+        ) as client:
+            response = client.post(f"{GOODHOPE_BASE_URL}/v1/responses", json=payload)
+            response.raise_for_status()
+            returned = response.json()
+    except httpx.HTTPStatusError as error:
+        raise RuntimeError(f"Goodhope HTTP {error.response.status_code}") from None
+    except httpx.HTTPError as error:
+        raise RuntimeError(f"Goodhope transport {type(error).__name__}") from None
     return returned, {"status": 200}
 
 
@@ -411,7 +414,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "verdict": "failed",
         "browser": {"engine": "Obscura", "version": version, "stealth": True, "viewport": [WIDTH, HEIGHT]},
         "target": safe_url(START_URL),
-        "model": {"endpoint": GOODHOPE_BASE_URL, "name": GOODHOPE_MODEL, "reasoning_effort": GOODHOPE_REASONING_EFFORT, "request_count": 0, "usage": {}},
+        "model": {"endpoint": GOODHOPE_BASE_URL, "name": GOODHOPE_MODEL, "reasoning_effort": GOODHOPE_REASONING_EFFORT, "request_attempts": 0, "request_count": 0, "usage": {}},
         "stages": [],
         "turnstile": {"visible_marker": None, "network_markers": []},
         "actions": 0,
@@ -468,6 +471,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "supported_keys": sorted(ALLOWED_KEYS),
                 "recent_outcomes": history[-8:],
             }
+            result["model"]["request_attempts"] += 1
             payload, _ = await asyncio.to_thread(goodhope_request, api_key, screenshot, context)
             result["model"]["request_count"] += 1
             collect_usage(payload, result["model"]["usage"])
