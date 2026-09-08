@@ -19,14 +19,8 @@ env:
 
 jobs:
   build-and-test:
-    name: ${{ matrix.os }} / render
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-22.04
-          - macos-14
-    runs-on: ${{ matrix.os }}
+    name: linux-amd64 / render
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
       - name: Checkout fork branch
@@ -34,8 +28,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -55,20 +48,3 @@ jobs:
 
       - name: Build render release
         run: cargo build --locked --release -p obscura-cli --bins --features render
-
-      - name: Stage binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/obscura-vision"
-          install -m 0755 target/release/obscura "$RUNNER_TEMP/obscura-vision/obscura"
-          install -m 0755 target/release/obscura-worker "$RUNNER_TEMP/obscura-vision/obscura-worker"
-          shasum -a 256 "$RUNNER_TEMP/obscura-vision/"* > "$RUNNER_TEMP/obscura-vision/SHA256SUMS"
-
-      - name: Upload serverless build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: obscura-vision-${{ matrix.os }}-${{ github.run_id }}
-          path: ${{ runner.temp }}/obscura-vision
-          if-no-files-found: error
-          retention-days: 3
