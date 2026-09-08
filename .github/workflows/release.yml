@@ -40,9 +40,6 @@ jobs:
             # produces a correct snapshot.
             os: macos-15-intel
             name: obscura-x86_64-macos
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            name: obscura-x86_64-windows
 
     runs-on: ${{ matrix.os }}
 
@@ -87,12 +84,6 @@ jobs:
           echo "CXXFLAGS=-isystem $SDK_PATH/usr/include/c++/v1" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$XCODE_PATH/Toolchains/XcodeDefault.xctoolchain/usr/lib" >> "$GITHUB_ENV"
 
-      - name: Configure libclang (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: Build no-render release binary
         run: cargo build --release --target ${{ matrix.target }} -p obscura-cli --bins --no-default-features
 
@@ -101,11 +92,7 @@ jobs:
         run: |
           BIN_DIR=target/${{ matrix.target }}/release
           mkdir -p dist/no-render
-          if [ -f "$BIN_DIR/obscura.exe" ]; then
-            cp "$BIN_DIR/obscura.exe" "$BIN_DIR/obscura-worker.exe" dist/no-render/
-          else
-            cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/no-render/
-          fi
+          cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/no-render/
 
       - name: Build no-render stealth release binary
         run: cargo build --release --target ${{ matrix.target }} -p obscura-cli --bins --no-default-features --features stealth
@@ -115,11 +102,7 @@ jobs:
         run: |
           BIN_DIR=target/${{ matrix.target }}/release
           mkdir -p dist/no-render-stealth
-          if [ -f "$BIN_DIR/obscura.exe" ]; then
-            cp "$BIN_DIR/obscura.exe" "$BIN_DIR/obscura-worker.exe" dist/no-render-stealth/
-          else
-            cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/no-render-stealth/
-          fi
+          cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/no-render-stealth/
 
       - name: Build render-enabled release binary
         run: cargo build --release --target ${{ matrix.target }} -p obscura-cli --bins --features render
@@ -129,11 +112,7 @@ jobs:
         run: |
           BIN_DIR=target/${{ matrix.target }}/release
           mkdir -p dist/default
-          if [ -f "$BIN_DIR/obscura.exe" ]; then
-            cp "$BIN_DIR/obscura.exe" "$BIN_DIR/obscura-worker.exe" dist/default/
-          else
-            cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/default/
-          fi
+          cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/default/
 
       - name: Build render-enabled stealth release binary
         run: cargo build --release --target ${{ matrix.target }} -p obscura-cli --bins --features render,stealth
@@ -143,11 +122,7 @@ jobs:
         run: |
           BIN_DIR=target/${{ matrix.target }}/release
           mkdir -p dist/stealth
-          if [ -f "$BIN_DIR/obscura.exe" ]; then
-            cp "$BIN_DIR/obscura.exe" "$BIN_DIR/obscura-worker.exe" dist/stealth/
-          else
-            cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/stealth/
-          fi
+          cp "$BIN_DIR/obscura" "$BIN_DIR/obscura-worker" dist/stealth/
 
       - name: Smoke test release binaries (V8 snapshot)
         # Run the V8 path once so a release never ships a binary that crashes at
@@ -158,19 +133,16 @@ jobs:
         run: |
           for VARIANT in default stealth no-render no-render-stealth; do
             BIN=dist/$VARIANT/obscura
-            [ -f "$BIN.exe" ] && BIN="$BIN.exe"
             "$BIN" fetch "data:text/html,<title>ok</title>" --eval "1+1"
           done
           for VARIANT in default stealth; do
             BIN=dist/$VARIANT/obscura
-            [ -f "$BIN.exe" ] && BIN="$BIN.exe"
             "$BIN" fetch "data:text/html,<style>body{margin:0;background:%23123456}</style>" --screenshot smoke.png
             test -s smoke.png
             rm smoke.png
           done
           for VARIANT in no-render no-render-stealth; do
             BIN=dist/$VARIANT/obscura
-            [ -f "$BIN.exe" ] && BIN="$BIN.exe"
             if "$BIN" fetch "data:text/html,<title>no-render</title>" --screenshot smoke.png; then
               echo "$VARIANT unexpectedly supports screenshots" >&2
               exit 1
@@ -178,28 +150,14 @@ jobs:
             test ! -e smoke.png
           done
 
-      - name: Package (Unix)
-        if: runner.os != 'Windows'
+      - name: Package
         run: |
           tar czf ${{ matrix.name }}.tar.gz -C dist/default obscura obscura-worker
           tar czf ${{ matrix.name }}-stealth.tar.gz -C dist/stealth obscura obscura-worker
           tar czf ${{ matrix.name }}-no-render.tar.gz -C dist/no-render obscura obscura-worker
           tar czf ${{ matrix.name }}-no-render-stealth.tar.gz -C dist/no-render-stealth obscura obscura-worker
 
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cd dist/default
-          7z a ../../${{ matrix.name }}.zip obscura.exe obscura-worker.exe
-          cd ../stealth
-          7z a ../../${{ matrix.name }}-stealth.zip obscura.exe obscura-worker.exe
-          cd ../no-render
-          7z a ../../${{ matrix.name }}-no-render.zip obscura.exe obscura-worker.exe
-          cd ../no-render-stealth
-          7z a ../../${{ matrix.name }}-no-render-stealth.zip obscura.exe obscura-worker.exe
-
-      - name: Generate SHA-256 manifest (Unix)
-        if: runner.os != 'Windows'
+      - name: Generate SHA-256 manifest
         shell: bash
         run: |
           if command -v sha256sum >/dev/null 2>&1; then
@@ -207,24 +165,6 @@ jobs:
           else
             shasum -a 256 ${{ matrix.name }}*.tar.gz > ${{ matrix.name }}.sha256
           fi
-
-      - name: Generate SHA-256 manifest (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $assets = @(Get-ChildItem -File -Filter "${{ matrix.name }}*.zip")
-          if ($assets.Count -eq 0) {
-            throw "No release archives were packaged"
-          }
-          $lines = @($assets | ForEach-Object {
-            $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$digest *$($_.Name)"
-          })
-          [System.IO.File]::WriteAllLines(
-            (Join-Path $PWD "${{ matrix.name }}.sha256"),
-            [string[]]$lines,
-            [System.Text.Encoding]::ASCII
-          )
 
       - name: Upload packaged binaries
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -235,10 +175,6 @@ jobs:
             ${{ matrix.name }}-stealth.tar.gz
             ${{ matrix.name }}-no-render.tar.gz
             ${{ matrix.name }}-no-render-stealth.tar.gz
-            ${{ matrix.name }}.zip
-            ${{ matrix.name }}-stealth.zip
-            ${{ matrix.name }}-no-render.zip
-            ${{ matrix.name }}-no-render-stealth.zip
             ${{ matrix.name }}.sha256
           if-no-files-found: error
           retention-days: 1
