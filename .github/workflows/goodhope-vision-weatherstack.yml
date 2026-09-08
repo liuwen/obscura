@@ -61,7 +61,6 @@ jobs:
           set -euo pipefail
           test -n "$GOODHOPE_API_KEY"
           run_dir="$RUNNER_TEMP/goodhope-vision-weatherstack"
-          mkdir -m 700 "$run_dir"
           python3 tools/goodhope_vision_weatherstack.py \
             --obscura-bin "$RUNNER_TEMP/obscura-release/obscura" \
             --run-dir "$run_dir"
