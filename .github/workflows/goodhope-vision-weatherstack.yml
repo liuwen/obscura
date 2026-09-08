@@ -1,0 +1,81 @@
+name: Goodhope vision Weatherstack experiment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goodhope-vision-weatherstack
+  cancel-in-progress: false
+
+jobs:
+  obscura-goodhope-weatherstack:
+    name: linux-arm64 / Obscura vision-only
+    runs-on: ubuntu-22.04-arm
+    environment: obscura-goodhope-experiment
+    timeout-minutes: 25
+    env:
+      GOODHOPE_API_KEY: ${{ secrets.GOODHOPE_API_KEY }}
+      EXPECTED_ARCHIVE_SHA256: 6378cef0d65943d60ac642b80c9d25903aa042080658ba66c64b7de1272095b8
+      EXPECTED_MANIFEST_SHA256: 3aa46fad6cea94c3ac67b4a43361cb24fbc284c2d26a241e4c03852fe36ecdc9
+      RELEASE_URL: https://github.com/liuwen/obscura/releases/download/v0.2.2-vision.1
+
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Verify native ARM64 runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+
+      - name: Install CDP transport only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user --disable-pip-version-check websockets==15.0.1
+
+      - name: Download and verify published Obscura archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/obscura-release"
+          cd "$RUNNER_TEMP/obscura-release"
+          curl --fail --location --retry 3 --retry-all-errors --output obscura-aarch64-linux.sha256 "$RELEASE_URL/obscura-aarch64-linux.sha256"
+          test "$(sha256sum obscura-aarch64-linux.sha256 | cut -d ' ' -f1)" = "$EXPECTED_MANIFEST_SHA256"
+          curl --fail --location --retry 3 --retry-all-errors --output obscura-aarch64-linux-stealth.tar.gz "$RELEASE_URL/obscura-aarch64-linux-stealth.tar.gz"
+          test "$(sha256sum obscura-aarch64-linux-stealth.tar.gz | cut -d ' ' -f1)" = "$EXPECTED_ARCHIVE_SHA256"
+          tar xzf obscura-aarch64-linux-stealth.tar.gz
+          test -x obscura
+          test -x obscura-worker
+          ./obscura --version
+
+      - name: Run bounded Obscura-only Goodhope controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$GOODHOPE_API_KEY"
+          run_dir="$RUNNER_TEMP/goodhope-vision-weatherstack"
+          mkdir -m 700 "$run_dir"
+          python3 tools/goodhope_vision_weatherstack.py \
+            --obscura-bin "$RUNNER_TEMP/obscura-release/obscura" \
+            --run-dir "$run_dir"
+          mkdir -p evidence
+          install -m 600 "$run_dir/evidence.json" evidence/evidence.json
+          cat evidence/evidence.json
+
+      - name: Upload redacted evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: goodhope-vision-weatherstack-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: evidence/evidence.json
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: false
+          compression-level: 0
