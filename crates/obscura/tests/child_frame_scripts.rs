@@ -3,9 +3,23 @@
 //! it stayed an inert node. This is the reporter's loopback repro, reduced to
 //! the part that needs no network: two documents on one local server.
 
-use std::io::{Read, Write};
+use std::{
+    ffi::OsString,
+    io::{Read, Write},
+};
 
 use obscura::Browser;
+
+struct RestoreMaxLiveFrames(Option<OsString>);
+
+impl Drop for RestoreMaxLiveFrames {
+    fn drop(&mut self) {
+        match self.0.take() {
+            Some(value) => std::env::set_var("OBSCURA_MAX_LIVE_FRAMES", value),
+            None => std::env::remove_var("OBSCURA_MAX_LIVE_FRAMES"),
+        }
+    }
+}
 
 const PARENT_HTML: &str = r#"<!doctype html><html><head><title>parent</title></head><body>
 <script>
@@ -321,6 +335,8 @@ async fn a_static_child_frame_runs_its_own_script() {
 #[tokio::test]
 async fn a_rejected_child_frame_does_not_leave_js_references() {
     std::env::set_var("OBSCURA_ALLOW_PRIVATE_NETWORK", "1");
+    let _restore_max_live_frames =
+        RestoreMaxLiveFrames(std::env::var_os("OBSCURA_MAX_LIVE_FRAMES"));
     std::env::set_var("OBSCURA_MAX_LIVE_FRAMES", "0");
     let base = spawn_server(STATIC_PARENT_HTML);
 
