@@ -1,0 +1,71 @@
+name: Vision input fixes
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - vision-input-fixes
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vision-input-fixes-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / render
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - macos-14
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout fork branch
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake libclang-dev libssl-dev llvm-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Test render-enabled workspace
+        run: cargo test --locked --workspace --features render
+
+      - name: Build render release
+        run: cargo build --locked --release -p obscura-cli --bins --features render
+
+      - name: Stage binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/obscura-vision"
+          install -m 0755 target/release/obscura "$RUNNER_TEMP/obscura-vision/obscura"
+          install -m 0755 target/release/obscura-worker "$RUNNER_TEMP/obscura-vision/obscura-worker"
+          shasum -a 256 "$RUNNER_TEMP/obscura-vision/"* > "$RUNNER_TEMP/obscura-vision/SHA256SUMS"
+
+      - name: Upload serverless build
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: obscura-vision-${{ matrix.os }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/obscura-vision
+          if-no-files-found: error
+          retention-days: 3
