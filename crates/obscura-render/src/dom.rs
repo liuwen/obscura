@@ -329,6 +329,10 @@ pub struct DomLayout {
     /// of (box, word text) pairs rather than a single box, unlike every other
     /// node kind. Keyed by the text node's `NodeId`, in layout order.
     pub text_runs: HashMap<NodeId, Vec<(Rect, String)>>,
+    /// Current form-control IDL values projected by the embedding runtime.
+    /// They deliberately remain separate from HTML value attributes and
+    /// textarea child text, which retain their default-value semantics.
+    pub(crate) live_form_values: HashMap<NodeId, Arc<str>>,
     /// Inline formatting contexts that were shaped by cosmic-text (see
     /// `inline`): a single leaf per container, its glyphs held in
     /// `text_engine`. `ifc_items` maps the container's `NodeId` to its item
@@ -7271,6 +7275,7 @@ fn layout_dom_once(
             translates,
             transforms,
             text_runs,
+            live_form_values: HashMap::new(),
             #[cfg(feature = "paint")]
             text_engine: engine,
             #[cfg(feature = "paint")]

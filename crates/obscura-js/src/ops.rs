@@ -184,6 +184,10 @@ pub struct ObscuraState {
     /// DOM/style/viewport changes clear this value but retain resource bytes.
     #[cfg(feature = "render")]
     pub prepared_render: Option<obscura_render::PreparedRender>,
+    /// Current form-control IDL values projected into retained paint without
+    /// reflecting them into the DOM's HTML default-value representation.
+    #[cfg(feature = "render")]
+    pub live_form_values: HashMap<NodeId, Arc<str>>,
     /// CSS media type selected for the next retained layout. Live pages use
     /// screen; PDF export switches to print for one synchronous capture and
     /// restores screen before returning.
@@ -331,6 +335,8 @@ impl ObscuraState {
             base_url_cache: RefCell::new(None),
             #[cfg(feature = "render")]
             prepared_render: None,
+            #[cfg(feature = "render")]
+            live_form_values: HashMap::new(),
             #[cfg(feature = "render")]
             render_media: obscura_render::CssMediaType::Screen,
             #[cfg(feature = "render")]
@@ -1202,6 +1208,37 @@ fn op_dom(
 }
 
 fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) -> String {
+    #[cfg(feature = "render")]
+    if cmd == "set_form_value" {
+        let Ok(raw) = arg1.parse::<u32>() else {
+            return "false".into();
+        };
+        let node = NodeId::new(raw);
+        let mut state = shared.borrow_mut();
+        let connected = state.dom.as_ref().and_then(|dom| {
+            let binding = dom.get_node(node)?;
+            let element = binding.as_element()?;
+            matches!(element.local.as_ref(), "input")
+                .then(|| dom.is_connected(node))
+        });
+        let Some(connected) = connected else {
+            return "false".into();
+        };
+        let value: Arc<str> = arg2.into();
+        state.live_form_values.insert(node, value.clone());
+        if let Some(prepared) = state.prepared_render.as_mut() {
+            prepared.set_live_form_value(node, value);
+        }
+        if connected {
+            state.activity_generation = state.activity_generation.wrapping_add(1);
+        }
+        return "true".into();
+    }
+    #[cfg(not(feature = "render"))]
+    if cmd == "set_form_value" {
+        return "true".into();
+    }
+
     {
         // Scroll offsets belong to a node at its current tree position.
         // Temporary box/style loss keeps that latent state, but DOM removal,
@@ -5272,6 +5309,8 @@ pub(crate) fn ensure_prepared_render(
                 .animation_timeline
                 .retain_nodes(|node| connected.contains(&node));
         }
+        let mut prepared = prepared;
+        prepared.set_live_form_values(&state.live_form_values);
         state.prepared_render = Some(prepared);
         state.resolved_scroll = None;
     }

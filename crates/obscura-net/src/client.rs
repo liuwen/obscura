@@ -663,6 +663,19 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
     }
 }
 
+fn env_allows_rfc2544_dns() -> bool {
+    std::env::var("OBSCURA_ALLOW_RFC2544_DNS")
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+}
+
+fn is_rfc2544(ip: IpAddr) -> bool {
+    matches!(ip, IpAddr::V4(v4) if {
+        let octets = v4.octets();
+        octets[0] == 198 && (octets[1] == 18 || octets[1] == 19)
+    })
+}
+
 /// DNS resolver that performs the lookup and then rejects the whole request if
 /// ANY resolved address is in the SSRF deny-set. This closes the DNS-rebinding
 /// bypass a host-string check alone cannot: a public name that resolves to
@@ -694,7 +707,11 @@ impl Resolve for SsrfGuardResolver {
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
                 .collect();
             if !allow {
-                if let Some(bad) = addrs.iter().find(|sa| is_forbidden_ip(sa.ip())) {
+                let allow_rfc2544 = env_allows_rfc2544_dns();
+                if let Some(bad) = addrs
+                    .iter()
+                    .find(|sa| is_forbidden_ip(sa.ip()) && !(allow_rfc2544 && is_rfc2544(sa.ip())))
+                {
                     return Err(format!(
                         "SSRF blocked: '{}' resolves to forbidden address {}",
                         host,
@@ -1188,6 +1205,21 @@ impl ObscuraHttpClient {
         self.fetch_with_method(Method::GET, url, None, callbacks).await
     }
 
+    /// Fetch a document navigation while preserving its source document for
+    /// browser-default Referer and Sec-Fetch-Site headers.
+    pub async fn fetch_navigation_with_callbacks(
+        &self,
+        url: &Url,
+        source: Option<&Url>,
+        callbacks: Option<&CallbackRegistry>,
+    ) -> Result<Response, ObscuraNetError> {
+        let mut request = ResourceRequest::navigation();
+        request.initiator = source.cloned();
+        request.referrer = source.cloned();
+        self.fetch_with_profile(Method::GET, url, None, callbacks, request)
+            .await
+    }
+
     pub async fn post_form(&self, url: &Url, body: &str) -> Result<Response, ObscuraNetError> {
         self.fetch_with_method(Method::POST, url, Some(body.as_bytes().to_vec()), None).await
     }
@@ -1201,6 +1233,28 @@ impl ObscuraHttpClient {
     ) -> Result<Response, ObscuraNetError> {
         self.fetch_with_method(Method::POST, url, Some(body.as_bytes().to_vec()), callbacks)
             .await
+    }
+
+    /// POST a form navigation while preserving its source document for
+    /// browser-default Referer and Sec-Fetch-Site headers.
+    pub async fn post_form_navigation_with_callbacks(
+        &self,
+        url: &Url,
+        body: &str,
+        source: Option<&Url>,
+        callbacks: Option<&CallbackRegistry>,
+    ) -> Result<Response, ObscuraNetError> {
+        let mut request = ResourceRequest::navigation();
+        request.initiator = source.cloned();
+        request.referrer = source.cloned();
+        self.fetch_with_profile(
+            Method::POST,
+            url,
+            Some(body.as_bytes().to_vec()),
+            callbacks,
+            request,
+        )
+        .await
     }
 
     pub async fn fetch_with_method(

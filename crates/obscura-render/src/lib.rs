@@ -113,6 +113,7 @@ pub use paint::{
     prepare_dom_with_dynamic_fonts_and_stylesheet_cache_with_animation_state,
     screenshot_png, screenshot_png_scrolled, screenshot_png_scrolled_at_animation_time,
     screenshot_png_scrolled_at_animation_time_with_surface_color_and_resources,
+    screenshot_png_scrolled_at_animation_time_with_surface_color_and_resources_and_live_form_values,
     screenshot_png_scrolled_at_animation_time_with_surface_color,
     prepare_dom_with_retained_attribute_styles, prepare_dom_with_retained_styles,
     prepare_dom_with_retained_styles_at_animation_time,

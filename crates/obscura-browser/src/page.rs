@@ -1329,7 +1329,7 @@ impl Page {
             let source = if self.should_block_url(&url) {
                 None
             } else if let Ok(parsed) = Url::parse(&url) {
-                match self.do_fetch(&parsed).await {
+                match self.do_fetch(&parsed, self.url.as_ref()).await {
                     Ok(response) => Some(String::from_utf8_lossy(&response.body).into_owned()),
                     Err(error) => {
                         tracing::warn!("frame script {} failed: {}", url, error);
@@ -1759,18 +1759,20 @@ impl Page {
             .unwrap_or([255, 255, 255, 255])
     }
 
-    async fn do_fetch(&self, url: &Url) -> Result<Response, ObscuraNetError> {
+    async fn do_fetch(
+        &self,
+        url: &Url,
+        source: Option<&Url>,
+    ) -> Result<Response, ObscuraNetError> {
         #[cfg(feature = "stealth")]
-        if let Some(ref stealth) = self.stealth_client {
-            // Pass the page callbacks so CDP Network events and
-            // page.on('request'/'response') observers fire for stealth-mode
-            // navigations too, matching the non-stealth path below.
+        if let Some(stealth) = &self.stealth_client {
+            // Stealth navigation currently owns its request profile.
             return stealth
                 .fetch_with_callbacks(url, Some(&self.callbacks))
                 .await;
         }
         self.http_client
-            .fetch_with_callbacks(url, Some(&self.callbacks))
+            .fetch_navigation_with_callbacks(url, source, Some(&self.callbacks))
             .await
     }
     fn init_js(&mut self) {
@@ -3282,12 +3284,20 @@ impl Page {
                 body: body_bytes,
                 redirected_from: Vec::new(),
             })
-        } else if method == "POST" {
-            self.http_client
-                .post_form_with_callbacks(&url, body, Some(&self.callbacks))
-                .await
         } else {
-            self.do_fetch(&url).await
+            let navigation_source = Url::parse(referrer).ok();
+            if method == "POST" {
+                self.http_client
+                    .post_form_navigation_with_callbacks(
+                        &url,
+                        body,
+                        navigation_source.as_ref(),
+                        Some(&self.callbacks),
+                    )
+                    .await
+            } else {
+                self.do_fetch(&url, navigation_source.as_ref()).await
+            }
         }
         .map_err(|e| {
             self.lifecycle = LifecycleState::Failed;

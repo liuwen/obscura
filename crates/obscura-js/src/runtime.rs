@@ -1101,6 +1101,7 @@ impl ObscuraJsRuntime {
             gs.stylesheet_cache = obscura_render::StylesheetCache::default();
             gs.dynamic_fonts.clear();
             gs.canvas_surfaces.clear();
+            gs.live_form_values.clear();
             gs.scroll_offset = (0.0, 0.0);
             gs.element_scroll_offsets.clear();
             gs.scroll_generation = 0;
@@ -1512,9 +1513,10 @@ impl ObscuraJsRuntime {
         let ObscuraState {
             dom,
             render_resources,
+            live_form_values,
             ..
         } = &mut *state;
-        obscura_render::screenshot_png_scrolled_at_animation_time_with_surface_color_and_resources(
+        obscura_render::screenshot_png_scrolled_at_animation_time_with_surface_color_and_resources_and_live_form_values(
             dom.as_ref()?,
             viewport,
             base_url,
@@ -1522,6 +1524,7 @@ impl ObscuraJsRuntime {
             animation_sample_time,
             surface_color,
             render_resources,
+            live_form_values,
         )
     }
 

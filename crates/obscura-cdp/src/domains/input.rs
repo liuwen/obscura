@@ -72,6 +72,107 @@ const BACKSPACE_JS: &str = "(function() {\
     t.dispatchEvent(globalThis.__obscura_markTrusted(new Event('input', {bubbles:true})));\
 })()";
 
+// These helpers are evaluated inside an input-event IIFE, rather than exposed
+// on the page. They distinguish a programmatically focusable tabindex=-1
+// element (which a pointer may focus) from a sequentially focusable element
+// (which Tab may reach).
+const FOCUS_NAVIGATION_JS: &str = r#"
+function obscuraFocusIsUnavailable(el) {
+    if (!el || el.nodeType !== 1) return true;
+    for (var ancestor = el; ancestor && ancestor.nodeType === 1; ancestor = ancestor.parentElement) {
+        if ((ancestor.hasAttribute && (ancestor.hasAttribute('hidden') || ancestor.hasAttribute('inert'))) ||
+            ancestor.hidden === true || ancestor.inert === true) return true;
+        var ancestorStyle = null;
+        try { ancestorStyle = getComputedStyle(ancestor); } catch (_e) {}
+        if (ancestorStyle && ancestorStyle.display === 'none') return true;
+    }
+    var style = null;
+    try { style = getComputedStyle(el); } catch (_e) {}
+    if (style && (style.visibility === 'hidden' || style.visibility === 'collapse')) return true;
+    return globalThis.__obscura_isDisabled(el);
+}
+
+function obscuraFocusTabIndex(el) {
+    if (obscuraFocusIsUnavailable(el)) return null;
+
+    var tag = (el.localName || '').toLowerCase();
+    var type = (el.getAttribute && el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'input' && type === 'hidden') return null;
+
+    var rawTabIndex = el.getAttribute && el.getAttribute('tabindex');
+    if (rawTabIndex !== null && /^[\t\n\f\r ]*[+-]?\d+[\t\n\f\r ]*$/.test(rawTabIndex)) {
+        var tabIndex = Number(rawTabIndex);
+        if (isFinite(tabIndex) && tabIndex >= -2147483648 && tabIndex <= 2147483647) return tabIndex;
+    }
+
+    if ((tag === 'a' || tag === 'area') && el.hasAttribute('href')) return 0;
+    if (tag === 'button' || tag === 'input' || tag === 'select' || tag === 'textarea' ||
+        tag === 'iframe' || tag === 'object') return 0;
+    if ((tag === 'audio' || tag === 'video') && el.hasAttribute('controls')) return 0;
+    if (tag === 'summary') {
+        var details = el.parentElement;
+        if (details && details.localName === 'details' && details.querySelector('summary') === el) return 0;
+    }
+    var contentEditable = el.getAttribute && el.getAttribute('contenteditable');
+    if (contentEditable !== null && String(contentEditable).toLowerCase() !== 'false') return 0;
+    return null;
+}
+
+function obscuraNearestFocusTarget(target) {
+    var interactive = globalThis.__obscura_interactiveHost(target);
+    if (interactive) {
+        if (obscuraFocusIsUnavailable(interactive)) return null;
+        if (obscuraFocusTabIndex(interactive) !== null) return interactive;
+    }
+
+    var label = target && target.closest ? target.closest('label') : null;
+    if (label) {
+        var control = globalThis.__obscura_labeledControl(label);
+        if (control) {
+            if (obscuraFocusIsUnavailable(control)) return null;
+            if (obscuraFocusTabIndex(control) !== null) return control;
+        }
+    }
+
+    for (var candidate = target; candidate && candidate.nodeType === 1; candidate = candidate.parentElement) {
+        if (obscuraFocusTabIndex(candidate) !== null) return candidate;
+    }
+    return null;
+}
+
+function obscuraMoveSequentialFocus(backward) {
+    var active = document.activeElement || document.body;
+    var nodes = document.querySelectorAll ? document.querySelectorAll(
+        'a[href],area[href],button,input,select,textarea,iframe,object,summary,' +
+        'audio[controls],video[controls],[tabindex],[contenteditable]'
+    ) : [];
+    var positive = [], normal = [];
+    for (var i = 0; i < nodes.length; i++) {
+        var tabIndex = obscuraFocusTabIndex(nodes[i]);
+        if (tabIndex === null || tabIndex < 0) continue;
+        (tabIndex > 0 ? positive : normal).push([tabIndex, i, nodes[i]]);
+    }
+    positive.sort(function(a, b) { return a[0] - b[0] || a[1] - b[1]; });
+
+    var candidates = [];
+    for (var p = 0; p < positive.length; p++) candidates.push(positive[p][2]);
+    for (var n = 0; n < normal.length; n++) candidates.push(normal[n][2]);
+
+    var current = -1;
+    for (var c = 0; c < candidates.length; c++) {
+        if (candidates[c] === active) { current = c; break; }
+    }
+    var next = null;
+    if (current < 0) {
+        next = candidates[backward ? candidates.length - 1 : 0] || null;
+    } else if (backward ? current > 0 : current + 1 < candidates.length) {
+        next = candidates[backward ? current - 1 : current + 1];
+    }
+    if (next && typeof next.focus === 'function') next.focus();
+    else if (active && typeof active.blur === 'function') active.blur();
+}
+"#;
+
 fn mouse_button_code(button: &str) -> u8 {
     match button {
         "middle" => 1,
@@ -115,6 +216,7 @@ pub async fn handle(
             let x = params.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let y = params.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let button = params.get("button").and_then(|v| v.as_str()).unwrap_or("left");
+            let primary_button = button == "left";
             let button_code = mouse_button_code(button);
             let buttons = params
                 .get("buttons")
@@ -133,7 +235,12 @@ pub async fn handle(
                             globalThis.__obscura_click_target = target;\
                             globalThis.__obscura_mouse_down = {{target:target,button:{button_code},clickCount:{click_count}}};\
                             var evt = globalThis.__obscura_markTrusted(new MouseEvent('mousedown', {{bubbles:true,cancelable:true,view:globalThis,clientX:{x},clientY:{y},button:{button_code},buttons:{buttons},detail:{click_count},altKey:{alt_key},ctrlKey:{ctrl_key},metaKey:{meta_key},shiftKey:{shift_key}}}));\
-                            target.dispatchEvent(evt);\
+                            var cancelled = !target.dispatchEvent(evt);\
+                            if (!cancelled && {primary_button}) {{\
+                                {focus_navigation}\
+                                var focusTarget = obscuraNearestFocusTarget(target);\
+                                if (focusTarget && typeof focusTarget.focus === 'function') focusTarget.focus();\
+                            }}\
                         }})()",
                         x = x,
                         y = y,
@@ -144,6 +251,8 @@ pub async fn handle(
                         ctrl_key = ctrl_key,
                         meta_key = meta_key,
                         shift_key = shift_key,
+                        focus_navigation = FOCUS_NAVIGATION_JS,
+                        primary_button = primary_button,
                     );
                     page.evaluate(&code);
                 }
@@ -338,6 +447,8 @@ pub async fn handle(
             let key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
             let code = params.get("code").and_then(|v| v.as_str()).unwrap_or("");
             let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let modifiers = params.get("modifiers").and_then(|v| v.as_u64()).unwrap_or(0);
+            let (alt_key, ctrl_key, meta_key, shift_key) = modifier_flags(modifiers);
 
             if let Some(page) = ctx.get_session_page_mut(session_id) {
                 match event_type {
@@ -345,55 +456,90 @@ pub async fn handle(
                         let js = format!(
                             "(function() {{\
                                 var target = document.activeElement || document.body;\
-                                var evt = globalThis.__obscura_markTrusted(new KeyboardEvent('keydown', {{bubbles:true,cancelable:true,key:{key},code:{code}}}));\
-                                target.dispatchEvent(evt);\
+                                var evt = globalThis.__obscura_markTrusted(new KeyboardEvent('keydown', {{bubbles:true,cancelable:true,view:globalThis,key:{key},code:{code},altKey:{alt_key},ctrlKey:{ctrl_key},metaKey:{meta_key},shiftKey:{shift_key}}}));\
+                                var cancelled = !target.dispatchEvent(evt);\
+                                {focus_navigation}\
+                                if (!cancelled && {tab_key} && !{alt_key} && !{ctrl_key} && !{meta_key}) obscuraMoveSequentialFocus({shift_key});\
+                                return cancelled;\
                             }})()",
-                            // Escape backslash BEFORE single-quote (as the text
-                            // path below does) so a key like "\" — Chrome's
-                            // backslash key — doesn't escape the closing quote
-                            // and produce a syntax error that drops the event.
                             key = js_str(key),
                             code = js_str(code),
+                            alt_key = alt_key,
+                            ctrl_key = ctrl_key,
+                            meta_key = meta_key,
+                            shift_key = shift_key,
+                            tab_key = key == "Tab",
+                            focus_navigation = FOCUS_NAVIGATION_JS,
                         );
-                        page.evaluate(&js);
+                        let keydown_cancelled = page.evaluate(&js).as_bool().unwrap_or(false);
 
-                        if !text.is_empty() && text != "\r" && text != "\n" {
-                            page.evaluate(&insert_text_js(text));
-                        }
+                        if !keydown_cancelled {
+                            if !text.is_empty() && text != "\r" && text != "\n" {
+                                page.evaluate(&insert_text_js(text));
+                            }
 
-                        if key == "Enter" {
-                            // In a textarea Enter inserts a newline; in input fields
-                            // it submits the containing form. Real Chrome distinguishes
-                            // these two and we should too: previously every Enter tried
-                            // to submit the nearest form even from a textarea.
-                            let js = "(function() {\
-                                var target = document.activeElement;\
-                                if (!target) return;\
-                                target.dispatchEvent(globalThis.__obscura_markTrusted(new KeyboardEvent('keypress', {bubbles:true,key:'Enter',code:'Enter'})));\
-                                if (target.localName === 'textarea') {\
-                                    globalThis.__obscura_setFieldValue(target, 'value', (target.value || '') + '\\n');\
-                                    target.dispatchEvent(globalThis.__obscura_markTrusted(new Event('input', {bubbles:true})));\
-                                } else {\
-                                    var form = target.form || (target.closest && target.closest('form'));\
-                                    if (form) {{ try {{ if (typeof form.requestSubmit === 'function') {{ form.requestSubmit(); }} else {{ form.submit(); }} }} catch(e) {{}} }}\
-                                }\
-                            })()";
-                            page.evaluate(js);
-                        }
+                            if key == "Enter" {
+                                // In a textarea Enter inserts a newline; in input fields
+                                // it submits the containing form. Real Chrome distinguishes
+                                // these two and we should too: previously every Enter tried
+                                // to submit the nearest form even from a textarea.
+                                let js = "(function() {\
+                                    var target = document.activeElement;\
+                                    if (!target) return;\
+                                    target.dispatchEvent(globalThis.__obscura_markTrusted(new KeyboardEvent('keypress', {bubbles:true,key:'Enter',code:'Enter'})));\
+                                    if (target.localName === 'textarea') {\
+                                        globalThis.__obscura_setFieldValue(target, 'value', (target.value || '') + '\\n');\
+                                        target.dispatchEvent(globalThis.__obscura_markTrusted(new Event('input', {bubbles:true})));\
+                                    } else {\
+                                        var form = target.form || (target.closest && target.closest('form'));\
+                                        if (form) {{ try {{ if (typeof form.requestSubmit === 'function') {{ form.requestSubmit(); }} else {{ form.submit(); }} }} catch(e) {{}} }}\
+                                    }\
+                                })()";
+                                page.evaluate(js);
+                            }
 
-                        if key == "Backspace" {
-                            page.evaluate(BACKSPACE_JS);
+                            if key == "Backspace" {
+                                page.evaluate(BACKSPACE_JS);
+                            }
+
+                            if key == "ArrowDown" || key == "ArrowUp" {
+                                let forward = key == "ArrowDown";
+                                let js = format!(
+                                    "(function() {{\
+                                        var target = document.activeElement;\
+                                        if (!target || target.localName !== 'select' || target.multiple) return;\
+                                        var options = target.options || [];\
+                                        var index = target.selectedIndex;\
+                                        for (var step = 0; step < options.length; step++) {{\
+                                            index += {direction};\
+                                            if (index < 0 || index >= options.length) return;\
+                                            if (!options[index].disabled) {{\
+                                                target.selectedIndex = index;\
+                                                target.dispatchEvent(globalThis.__obscura_markTrusted(new Event('input', {{bubbles:true}})));\
+                                                target.dispatchEvent(globalThis.__obscura_markTrusted(new Event('change', {{bubbles:true}})));\
+                                                return;\
+                                            }}\
+                                        }}\
+                                    }})()",
+                                    direction = if forward { 1 } else { -1 },
+                                );
+                                page.evaluate(&js);
+                            }
                         }
                     }
                     "keyUp" => {
                         let js = format!(
                             "(function() {{\
                                 var target = document.activeElement || document.body;\
-                                var evt = globalThis.__obscura_markTrusted(new KeyboardEvent('keyup', {{bubbles:true,key:{key},code:{code}}}));\
+                                var evt = globalThis.__obscura_markTrusted(new KeyboardEvent('keyup', {{bubbles:true,view:globalThis,key:{key},code:{code},altKey:{alt_key},ctrlKey:{ctrl_key},metaKey:{meta_key},shiftKey:{shift_key}}}));\
                                 target.dispatchEvent(evt);\
                             }})()",
                             key = js_str(key),
                             code = js_str(code),
+                            alt_key = alt_key,
+                            ctrl_key = ctrl_key,
+                            meta_key = meta_key,
+                            shift_key = shift_key,
                         );
                         page.evaluate(&js);
                     }

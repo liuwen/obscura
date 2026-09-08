@@ -4023,9 +4023,12 @@ class Element extends Node {
       }
       return;
     }
-    _formValues[this._nid] = String(v);
-    if (tag === 'textarea') {
-      this.textContent = String(v);
+    const value = String(v);
+    _formValues[this._nid] = value;
+    if (tag === 'input') {
+      _dom("set_form_value", this._nid, value);
+    } else if (tag === 'textarea') {
+      this.textContent = value;
     }
   }
   get min() { return this.getAttribute('min') || ''; }
@@ -4427,7 +4430,7 @@ class Element extends Node {
   set selectedIndex(v) {
     const opts = this.options;
     for (let i = 0; i < opts.length; i++) {
-      opts[i]._selected = (i === v);
+      opts[i].selected = (i === v);
     }
   }
   // Per the HTML spec, the submit() METHOD submits the form WITHOUT firing a

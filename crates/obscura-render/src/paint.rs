@@ -856,6 +856,23 @@ impl PreparedRender {
     pub fn animation_sample(&self) -> crate::AnimationSample {
         self.animation_sample
     }
+    /// Update one runtime form value without rebuilding layout. Form values
+    /// affect paint only; their HTML defaults remain in the DOM tree.
+    pub fn set_live_form_value(
+        &mut self,
+        node: obscura_dom::tree::NodeId,
+        value: Arc<str>,
+    ) {
+        self.layout.live_form_values.insert(node, value);
+    }
+
+    /// Seed a newly prepared render with the runtime's current form values.
+    pub fn set_live_form_values(
+        &mut self,
+        values: &HashMap<obscura_dom::tree::NodeId, Arc<str>>,
+    ) {
+        self.layout.live_form_values.clone_from(values);
+    }
 
     /// Whether advancing the document timeline can still change a sampled CSS
     /// animation. Finite animations stop producing compositor damage after
@@ -4650,89 +4667,99 @@ fn paint_laid_dom_scrolled(
             }
         }
 
-        // An empty text `<input>`/`<textarea>` shows its `placeholder`
-        // attribute as muted text; there is no DOM text node for it (it is
-        // not real content), so paint it directly from the attribute instead
-        // of going through `paint_text_node`.
+        // Runtime input values are paint state, not HTML default attributes.
+        // Keep textarea's existing child-text rendering path unchanged.
         if name.local.as_ref() == "input" || name.local.as_ref() == "textarea" {
-            let has_value = node
-                .get_attribute("value")
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
-                || (name.local.as_ref() == "textarea"
-                    && !tree.text_content(nid).is_empty());
-            // A text `<input>`'s value is not a DOM text node either, so it
-            // needs painting from the attribute the same way. Without this the
-            // control renders empty however it was filled in — from markup,
-            // from script, or by typing — while its `value` reads back
-            // correctly, so only a screenshot or PDF shows anything wrong.
-            // `<textarea>` is unaffected: its value *is* a text node.
-            if has_value && name.local.as_ref() == "input" {
-                if let Some(value) = node.get_attribute("value") {
-                    if !value.is_empty() {
-                        let fsize = style.font_size.unwrap_or(16.0);
-                        let text_x = rect.x + style.padding.left + style.border.left;
-                        let text_y = rect.y + style.padding.top + style.border.top;
-                        let color = style.color.unwrap_or([0, 0, 0, 255]);
-                        let masked;
-                        let shown = if node
+            let value = laid
+                .live_form_values
+                .get(&nid)
+                .map(|value| std::borrow::Cow::Borrowed(value.as_ref()))
+                .or_else(|| match name.local.as_ref() {
+                    "input" => node
+                        .get_attribute("value")
+                        .map(std::borrow::Cow::Borrowed),
+                    "textarea" => None,
+                    _ => None,
+                });
+            let has_value = value.as_deref().is_some_and(|value| !value.is_empty())
+                || (name.local.as_ref() == "textarea" && !tree.text_content(nid).is_empty());
+            let content_rect = crate::Rect {
+                x: rect.x + style.padding.left + style.border.left,
+                y: rect.y + style.padding.top + style.border.top,
+                width: (rect.width
+                    - style.padding.left
+                    - style.padding.right
+                    - style.border.left
+                    - style.border.right)
+                    .max(0.0),
+                height: (rect.height
+                    - style.padding.top
+                    - style.padding.bottom
+                    - style.border.top
+                    - style.border.bottom)
+                    .max(0.0),
+            };
+            if let Some(text_clip) = content_rect.intersect(&visible_rect) {
+                let fsize = style.font_size.unwrap_or(16.0);
+                let text_x = content_rect.x;
+                let text_y = content_rect.y;
+                let color = style.color.unwrap_or([0, 0, 0, 255]);
+                if let Some(value) = value.as_deref().filter(|value| !value.is_empty()) {
+                    let masked;
+                    let shown = if name.local.as_ref() == "input"
+                        && node
                             .get_attribute("type")
                             .is_some_and(|kind| kind.eq_ignore_ascii_case("password"))
-                        {
-                            masked = "\u{2022}".repeat(value.chars().count());
-                            masked.as_str()
-                        } else {
-                            value
-                        };
-                        if color[3] != 0 {
-                            draw_text(
-                                &mut pixmap,
-                                shown,
-                                text_x,
-                                text_y,
-                                color,
-                                fsize,
-                                false,
-                                style.font_family.as_deref(),
-                                style.letter_spacing.unwrap_or(0.0),
-                                clip,
-                                element_clip_mask,
-                                raster_scale,
-                            );
-                        }
+                    {
+                        masked = "\u{2022}".repeat(value.chars().count());
+                        masked.as_str()
+                    } else {
+                        value
+                    };
+                    if color[3] != 0 {
+                        draw_text(
+                            &mut pixmap,
+                            shown,
+                            text_x,
+                            text_y,
+                            color,
+                            fsize,
+                            false,
+                            style.font_family.as_deref(),
+                            style.letter_spacing.unwrap_or(0.0),
+                            Some(text_clip),
+                            element_clip_mask,
+                            raster_scale,
+                        );
                     }
-                }
-            }
-            if !has_value {
-                if let Some(placeholder) = node.get_attribute("placeholder") {
-                    if !placeholder.is_empty() {
-                        let fsize = style.font_size.unwrap_or(16.0);
-                        let text_x = rect.x + style.padding.left + style.border.left;
-                        let text_y = rect.y + style.padding.top + style.border.top;
-                        let placeholder_style = style.placeholder_pseudo.as_deref();
-                        let mut color = placeholder_style
-                            .and_then(|pseudo| pseudo.color)
-                            .unwrap_or([117, 117, 117, 255]);
-                        let opacity = placeholder_style
-                            .and_then(|pseudo| pseudo.opacity)
-                            .unwrap_or(1.0)
-                            .clamp(0.0, 1.0);
-                        color[3] = ((color[3] as f32) * opacity).round() as u8;
-                        if color[3] != 0 {
-                            draw_text(
-                                &mut pixmap,
-                                placeholder,
-                                text_x,
-                                text_y,
-                                color,
-                                fsize,
-                                false,
-                                style.font_family.as_deref(),
-                                style.letter_spacing.unwrap_or(0.0),
-                                clip,
-                                element_clip_mask,
-                                raster_scale,
-                            );
+                } else if !has_value {
+                    if let Some(placeholder) = node.get_attribute("placeholder") {
+                        if !placeholder.is_empty() {
+                            let placeholder_style = style.placeholder_pseudo.as_deref();
+                            let mut color = placeholder_style
+                                .and_then(|pseudo| pseudo.color)
+                                .unwrap_or([117, 117, 117, 255]);
+                            let opacity = placeholder_style
+                                .and_then(|pseudo| pseudo.opacity)
+                                .unwrap_or(1.0)
+                                .clamp(0.0, 1.0);
+                            color[3] = ((color[3] as f32) * opacity).round() as u8;
+                            if color[3] != 0 {
+                                draw_text(
+                                    &mut pixmap,
+                                    placeholder,
+                                    text_x,
+                                    text_y,
+                                    color,
+                                    fsize,
+                                    false,
+                                    style.font_family.as_deref(),
+                                    style.letter_spacing.unwrap_or(0.0),
+                                    Some(text_clip),
+                                    element_clip_mask,
+                                    raster_scale,
+                                );
+                            }
                         }
                     }
                 }
@@ -6358,6 +6385,31 @@ pub fn screenshot_png_scrolled_at_animation_time_with_surface_color_and_resource
         resources,
     )
     .and_then(|pixmap| pixmap.encode_png().ok())
+}
+
+/// PNG wrapper for an unprepared capture with runtime form values projected
+/// separately from the DOM's default-value attributes and child text.
+pub fn screenshot_png_scrolled_at_animation_time_with_surface_color_and_resources_and_live_form_values(
+    tree: &DomTree,
+    viewport: (f32, f32),
+    base_url: Option<&str>,
+    scroll: (f32, f32),
+    animation_sample_time: crate::AnimationSampleTime,
+    surface_color: [u8; 4],
+    resources: &mut RenderResourceCache,
+    live_form_values: &HashMap<obscura_dom::tree::NodeId, Arc<str>>,
+) -> Option<Vec<u8>> {
+    let mut prepared = prepare_dom_at_animation_time(
+        tree,
+        viewport,
+        base_url,
+        resources,
+        animation_sample_time,
+    )?;
+    prepared.set_live_form_values(live_form_values);
+    paint_prepared_with_surface_color(tree, &mut prepared, resources, scroll, surface_color)?
+        .encode_png()
+        .ok()
 }
 
 /// PNG convenience wrapper for a retained resource-aware layout.
