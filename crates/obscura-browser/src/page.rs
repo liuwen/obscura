@@ -1329,7 +1329,7 @@ impl Page {
             let source = if self.should_block_url(&url) {
                 None
             } else if let Ok(parsed) = Url::parse(&url) {
-                match self.do_fetch(&parsed, self.url.as_ref()).await {
+                match self.do_fetch(&parsed).await {
                     Ok(response) => Some(String::from_utf8_lossy(&response.body).into_owned()),
                     Err(error) => {
                         tracing::warn!("frame script {} failed: {}", url, error);
@@ -1759,7 +1759,19 @@ impl Page {
             .unwrap_or([255, 255, 255, 255])
     }
 
-    async fn do_fetch(
+    async fn do_fetch(&self, url: &Url) -> Result<Response, ObscuraNetError> {
+        #[cfg(feature = "stealth")]
+        if let Some(stealth) = &self.stealth_client {
+            return stealth
+                .fetch_with_callbacks(url, Some(&self.callbacks))
+                .await;
+        }
+        self.http_client
+            .fetch_with_callbacks(url, Some(&self.callbacks))
+            .await
+    }
+
+    async fn do_navigation_fetch(
         &self,
         url: &Url,
         source: Option<&Url>,
@@ -3296,7 +3308,7 @@ impl Page {
                     )
                     .await
             } else {
-                self.do_fetch(&url, navigation_source.as_ref()).await
+                self.do_navigation_fetch(&url, navigation_source.as_ref()).await
             }
         }
         .map_err(|e| {
