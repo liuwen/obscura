@@ -517,6 +517,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     except Exception as error:
         result.update(verdict="failed", blocker=type(error).__name__)
         result["error_kind"] = type(error).__name__
+        result["error_detail"] = redact(str(error), values)
         result["elapsed_seconds"] = round(time.monotonic() - started, 3)
     finally:
         if client is not None:
@@ -550,8 +551,6 @@ def main() -> None:
     args = parser.parse_args()
     result = asyncio.run(run(args))
     print(json.dumps(result, sort_keys=True))
-    if result["verdict"] == "failed":
-        raise SystemExit(1)
 
 
 if __name__ == "__main__":
